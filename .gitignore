@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# generated pipeline outputs (OD files, sim results, datasets, models, figures)
+output/
