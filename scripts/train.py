@@ -97,7 +97,12 @@ class GRUNet(nn.Module):
         return self.head(out).squeeze(2).clamp(max=12.0)  # (B, 24) log-rates
 
     def forward(self, edge, hour, static):
-        return self.profile(edge, static).gather(1, hour[:, None]).squeeze(1)
+        # decode each distinct edge's profile once, then pick the asked hours
+        uniq, inv = torch.unique(edge, return_inverse=True)
+        rep = torch.empty_like(uniq)
+        rep.scatter_(0, inv, torch.arange(len(edge), device=edge.device))
+        prof = self.profile(uniq, static[rep])
+        return prof[inv, hour]
 
 
 def metrics(y_true, y_pred, abs_tol, rel_tol):
