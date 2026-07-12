@@ -14,6 +14,7 @@ import glob
 import os
 import subprocess
 import sys
+from tqdm import tqdm
 
 
 def parse_args():
@@ -45,7 +46,7 @@ def main():
         sys.exit(f"no od_*.xml files in {args.od_dir}")
     os.makedirs(args.out_dir, exist_ok=True)
 
-    for k, od in enumerate(od_files):
+    for k, od in tqdm(enumerate(od_files)):
         name = os.path.splitext(os.path.basename(od))[0]
         wdir = os.path.join(args.out_dir, name)
         os.makedirs(wdir, exist_ok=True)
