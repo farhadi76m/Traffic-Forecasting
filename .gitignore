@@ -4,3 +4,5 @@ __pycache__/
 
 # generated pipeline outputs (OD files, sim results, datasets, models, figures)
 output/
+out*
+sumo
