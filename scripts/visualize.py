@@ -15,7 +15,6 @@ import argparse
 import os
 
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -184,6 +183,7 @@ def fig_daily(data, out):
 
 
 def main():
+    matplotlib.use("Agg")  # headless when run as a CLI; notebooks keep inline
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
     net = sumolib.net.readNet(args.net)

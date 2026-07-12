@@ -26,6 +26,12 @@ the headline metric.
 
 ![profiles](docs/figures/edge_profiles.png)
 
+## Demo notebook
+
+[`demo.ipynb`](demo.ipynb) is a minimal executed tour: model summary
+(torchinfo), what the embeddings learned, edge+hour inference, and all four
+figures inline. Requires one prior pipeline run (`output/` present).
+
 ## Setup
 
 - SUMO ≥ 1.18 CLI tools (`sumo`, `od2trips`, `duarouter`)
