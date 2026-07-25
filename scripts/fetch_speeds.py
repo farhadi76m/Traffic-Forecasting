@@ -74,12 +74,19 @@ def pick_probes(net, n, min_speed):
     return [(cand[k], mids[k]) for k in chosen]
 
 
+class ApiError(Exception):
+    """Carries the status and body so the caller can say what actually broke."""
+
+    def __init__(self, status, body):
+        self.status = status
+        super().__init__(f"HTTP {status}: {body[:160]}")
+
+
 def fetch_tomtom(lat, lon, key):
     r = requests.get(TOMTOM, params={"key": key, "point": f"{lat:.6f},{lon:.6f}",
                                      "unit": "KMPH"}, timeout=30)
-    if r.status_code == 403:
-        raise SystemExit("TomTom returned 403 - key rejected or over quota")
-    r.raise_for_status()
+    if r.status_code != 200:
+        raise ApiError(r.status_code, r.text.strip())
     d = r.json()["flowSegmentData"]
     return d["currentSpeed"], d["freeFlowSpeed"], d.get("confidence", 1.0)
 
@@ -103,6 +110,7 @@ def main():
             "need an API key: --api-key or $TOMTOM_API_KEY\n"
             "free key (no card): https://developer.tomtom.com/user/register")
 
+    print(f"api key is {args.api_key[:4]}{'*' * (len(args.api_key) - 8)}{args.api_key[-4:]}")
     net = sumolib.net.readNet(args.net, withInternal=False)
     probes = pick_probes(net, args.probes, args.min_speed)
     print(f"{len(probes)} probe segments across the net")
@@ -120,24 +128,39 @@ def main():
     for r in range(rounds):
         now = datetime.now(timezone.utc).astimezone()
         ok = 0
+        fails = 0
         for edge, (x, y) in probes:
             lon, lat = net.convertXY2LonLat(x, y)
-            try:
+            time.sleep(0.25)  # free tier allows ~5 req/s; throttle failures too,
+            try:              # or a 4xx storm turns into a 429 storm
                 cur, free, conf = fetch(lat, lon, args.api_key)
-            except SystemExit:
-                raise
-            except Exception as e:
-                print(f"  {edge.getID()}: {type(e).__name__}")
+            except ApiError as e:
+                fails += 1
+                print(f"  {edge.getID()} ({lat:.4f},{lon:.4f}): {e}")
+                # 403 = key/entitlement, 400 = malformed or unsupported point.
+                # If the first handful all fail the same way it is not the data,
+                # it is the account -- stop instead of burning 50 calls.
+                if fails == 5 and ok == 0:
+                    raise SystemExit(
+                        f"\n5 consecutive failures, 0 successes (HTTP {e.status}).\n"
+                        "  403 -> key lacks the Traffic API entitlement, or is over quota\n"
+                        "  400 -> point rejected (check lat/lon order in the output above)\n"
+                        "  Any -> TomTom may be geo-blocking this IP; try --provider here")
+                continue
+            except requests.RequestException as e:
+                fails += 1
+                print(f"  {edge.getID()}: {type(e).__name__} (network/proxy)")
                 continue
             if cur is None:
                 continue
             w.writerow([now.isoformat(timespec="seconds"), now.hour, edge.getID(),
                         f"{lat:.6f}", f"{lon:.6f}", cur, free, conf])
             ok += 1
-            time.sleep(0.25)  # free tier allows ~5 req/s
         f.flush()
-        cong = "n/a"
-        print(f"[{now:%Y-%m-%d %H:%M}] round {r + 1}/{rounds}: {ok} segments logged")
+        if ok == 0:
+            raise SystemExit(f"round {r + 1}: every probe failed -- see errors above")
+        print(f"[{now:%Y-%m-%d %H:%M}] round {r + 1}/{rounds}: "
+              f"{ok} segments logged, {fails} failed")
         if r + 1 < rounds:
             time.sleep(args.poll)
     f.close()

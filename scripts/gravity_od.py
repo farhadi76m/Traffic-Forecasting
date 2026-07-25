@@ -20,6 +20,7 @@ Example:
 """
 import argparse
 import os
+import time
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -76,8 +77,68 @@ def parse_args():
                         "(0.08-0.15 is typical for urban car travel)")
     p.add_argument("--noise", type=float, default=0.08)
     p.add_argument("--cache", default="output/osm_weights.npz")
+    p.add_argument("--osm", default="sumo/tehran_2026_area.osm",
+                   help="local OSM extract; used instead of Overpass when present. "
+                        "The public Overpass mirrors rate-limit and 502 constantly, "
+                        "so the local file is both faster and reproducible")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
+
+
+# tag -> which side of the trip it feeds, when reading the local .osm extract
+PROD_TAGS = [("building", {"residential", "apartments", "house", "detached",
+                          "dormitory"}),
+             ("landuse", {"residential"})]
+ATTR_TAGS = [("shop", None), ("office", None),
+             ("amenity", {"school", "university", "hospital", "marketplace",
+                          "bank", "restaurant", "cafe"}),
+             ("building", {"commercial", "retail", "office", "industrial",
+                           "school", "university", "hospital"}),
+             ("landuse", {"commercial", "retail", "industrial"})]
+
+
+def osm_local_points(osm_file, net):
+    """Read POI centroids straight out of the .osm extract, in net xy coords.
+
+    Returns (production_pts, attraction_pts). Ways are reduced to the mean of
+    their node coordinates -- good enough for assigning a building to a zone.
+    """
+    nodes = {}
+    prod, attr = [], []
+
+    def classify(tags):
+        hit_p = any(k in tags and (v is None or tags[k] in v) for k, v in PROD_TAGS)
+        hit_a = any(k in tags and (v is None or tags[k] in v) for k, v in ATTR_TAGS)
+        return hit_p, hit_a
+
+    for _, el in ET.iterparse(osm_file, events=("end",)):
+        if el.tag == "node":
+            nodes[el.get("id")] = (float(el.get("lon")), float(el.get("lat")))
+            tags = {t.get("k"): t.get("v") for t in el.findall("tag")}
+            if tags:
+                p, a = classify(tags)
+                if p or a:
+                    pt = nodes[el.get("id")]
+                    (prod if p else attr).append(pt)
+                    if p and a:
+                        attr.append(pt)
+        elif el.tag == "way":
+            tags = {t.get("k"): t.get("v") for t in el.findall("tag")}
+            p, a = classify(tags)
+            if p or a:
+                pts = [nodes[nd.get("ref")] for nd in el.findall("nd")
+                       if nd.get("ref") in nodes]
+                if pts:
+                    c = (float(np.mean([q[0] for q in pts])),
+                         float(np.mean([q[1] for q in pts])))
+                    if p:
+                        prod.append(c)
+                    if a:
+                        attr.append(c)
+            el.clear()
+    to_xy = lambda ps: np.array([net.convertLonLat2XY(lo, la)  # noqa: E731
+                                 for lo, la in ps]) if ps else np.empty((0, 2))
+    return to_xy(prod), to_xy(attr)
 
 
 def taz_polygons(taz_file):
@@ -107,44 +168,70 @@ def overpass_points(query, bbox):
     import requests
     q = f"[out:json][timeout:180];({query.format(bbox=bbox)});out center;"
     last = None
-    for url in OVERPASS:
-        try:
-            r = requests.post(url, data={"data": q}, headers=UA, timeout=300)
-            r.raise_for_status()
-            return [(c["lon"], c["lat"])
-                    for el in r.json()["elements"]
-                    for c in [el.get("center", el)] if "lat" in c and "lon" in c]
-        except Exception as e:
-            last = e
-            print(f"  {url.split('/')[2]} failed ({type(e).__name__}), trying next mirror")
-    raise SystemExit(f"all Overpass mirrors failed: {last}")
+    # the public mirrors are heavily loaded and 429/504 in bursts; one pass over
+    # them fails often, a few passes with backoff almost always gets through
+    for attempt in range(4):
+        for url in OVERPASS:
+            try:
+                r = requests.post(url, data={"data": q}, headers=UA, timeout=300)
+                r.raise_for_status()
+                return [(c["lon"], c["lat"])
+                        for el in r.json()["elements"]
+                        for c in [el.get("center", el)] if "lat" in c and "lon" in c]
+            except Exception as e:
+                last = e
+                print(f"  {url.split('/')[2]} failed ({type(e).__name__})")
+        wait = 15 * 2 ** attempt
+        if attempt < 3:
+            print(f"  all mirrors busy, retrying in {wait}s "
+                  f"(attempt {attempt + 2}/4)")
+            time.sleep(wait)
+    raise SystemExit(f"all Overpass mirrors failed after 4 rounds: {last}\n"
+                     "Try again later, or use --osm <file> with a building-rich "
+                     "extract.")
 
 
-def osm_weights(net, zones, polys, cache):
+def osm_weights(net, zones, polys, cache, osm_file=None):
     if os.path.exists(cache):
         z = np.load(cache, allow_pickle=True)
         if list(z["zones"]) == zones:
             print(f"weights from cache {cache}")
             return z["prod"], z["attr"]
 
-    b = net.getBoundary()
-    lon0, lat0 = net.convertXY2LonLat(b[0], b[1])
-    lon1, lat1 = net.convertXY2LonLat(b[2], b[3])
-    bbox = f"{lat0},{lon0},{lat1},{lon1}"
-    print(f"querying Overpass over {bbox} ...")
+    if osm_file and os.path.exists(osm_file):
+        print(f"reading land use from {osm_file} (no Overpass needed)")
+        prod_xy, attr_xy = osm_local_points(osm_file, net)
+    else:
+        b = net.getBoundary()
+        lon0, lat0 = net.convertXY2LonLat(b[0], b[1])
+        lon1, lat1 = net.convertXY2LonLat(b[2], b[3])
+        bbox = f"{lat0},{lon0},{lat1},{lon1}"
+        print(f"querying Overpass over {bbox} ...")
+        prod_xy = np.array([net.convertLonLat2XY(lo, la)
+                            for lo, la in overpass_points(PRODUCTION_Q, bbox)])
+        attr_xy = np.array([net.convertLonLat2XY(lo, la)
+                            for lo, la in overpass_points(ATTRACTION_Q, bbox)])
 
     prod = np.zeros(len(zones))
     attr = np.zeros(len(zones))
-    for name, query, target in [("residential", PRODUCTION_Q, prod),
-                                ("work/retail", ATTRACTION_Q, attr)]:
-        lonlats = overpass_points(query, bbox)
-        xy = np.array([net.convertLonLat2XY(lo, la) for lo, la in lonlats])
+    for name, xy, target in [("residential", prod_xy, prod),
+                             ("work/retail", attr_xy, attr)]:
         print(f"  {len(xy)} {name} features")
         for i, poly in enumerate(polys):
-            target[i] = points_in_poly(xy, poly).sum()
+            target[i] = points_in_poly(xy, poly).sum() if len(xy) else 0
 
-    # a zone with no OSM tags still has residents/shops -- floor it rather than
-    # let it drop out of the model entirely
+    # A zone with no OSM tags still has residents/shops, so floor it rather than
+    # let it drop out of the model. But a floored zone contributes NO information
+    # -- if many are floored the whole matrix is fiction, and that must be said
+    # out loud rather than hidden behind a plausible-looking number.
+    empty_p = int((prod == 0).sum())
+    empty_a = int((attr == 0).sum())
+    if empty_p or empty_a:
+        print(f"  WARNING: {empty_p}/{len(zones)} zones have ZERO residential "
+              f"features and {empty_a}/{len(zones)} have ZERO workplace features.")
+        print("  Those zones are floored to 1 and carry no real signal. A road-only "
+              ".osm\n  extract has few buildings -- pass --osm '' to use Overpass, "
+              "which has far\n  better building coverage.")
     prod = np.maximum(prod, 1.0)
     attr = np.maximum(attr, 1.0)
     os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
@@ -184,7 +271,7 @@ def main():
     cost = cost[np.ix_(order, order)]
     n = len(zones)
 
-    prod, attr = osm_weights(net, zones, polys, args.cache)
+    prod, attr = osm_weights(net, zones, polys, args.cache, args.osm)
     prod, attr = prod[keep] if len(prod) != n else prod, attr[keep] if len(attr) != n else attr
 
     deterrence = np.exp(-args.beta * cost)

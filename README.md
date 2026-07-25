@@ -85,6 +85,10 @@ profile regression, not sequence forecasting. The default `mlp` model:
   smooth 24h profile,
 - trained with **Poisson NLL** — the correct likelihood for count data.
 
+Note what is *not* an input: the OD demand. This model answers "what does a
+typical day look like on this edge", so it learns one average profile per edge
+and cannot react to a change in demand. If you want that, see the surrogate below.
+
 `--model gru` swaps in an RNN that decodes each edge's 24-step profile from its
 embedding; `--model table` is the historical per-(edge,hour) average baseline.
 Graph-based forecasters — [DCRNN](https://dl.acm.org/doi/10.1145/3532611),
@@ -93,6 +97,30 @@ STGCN, [Graph WaveNet](https://arxiv.org/pdf/2104.13096), or the
 references for the *history-window* variant of this problem (predicting the
 next hour from the last hour of sensor readings) and would be the next step if
 live measurements become available.
+
+## Surrogate model: OD -> traffic, and back again
+
+A second, separate pipeline replaces SUMO itself with a network:
+
+```
+OD matrix  ->  [surrogate]  ->  per-edge, per-hour counts + travel times
+```
+
+and then runs it backwards — observed travel times to a *posterior* over the OD
+matrix, which is the deployment question (you have travel times, you want
+demand). The forward surrogate reuses the GRU, now driven by the OD; the inverse
+is `bayesian scenario.py` with the BPR link-cost function swapped for the
+surrogate.
+
+The headline finding is a regime condition: **travel time only identifies the OD
+in a congested network.** At this map's default demand the network runs at 99% of
+free-flow speed, and knowing the OD improves travel-time prediction by exactly
+0.0000 R2 over a baseline that ignores the OD. Vehicle counts, on the same data,
+are highly informative.
+
+Full write-up, numbers and caveats: [`docs/SURROGATE.md`](docs/SURROGATE.md).
+Scripts: `sample_od.py`, `build_surrogate_dataset.py`, `train_surrogate.py`,
+`invert_od.py`, `visualize_surrogate.py`.
 
 ## Using another map
 

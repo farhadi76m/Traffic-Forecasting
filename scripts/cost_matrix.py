@@ -41,6 +41,8 @@ def parse_args():
     p.add_argument("--depart", default=None,
                    help="arcgis only: departure time as epoch ms, for traffic-aware "
                         "costs (e.g. next Tuesday 08:00 local)")
+    p.add_argument("--allow-partial", action="store_true",
+                   help="proceed even if the TAZ file does not fit this net")
     return p.parse_args()
 
 
@@ -146,8 +148,21 @@ def costs_arcgis(lonlats, api_key, depart=None, chunk=100):
 def main():
     args = parse_args()
     net = sumolib.net.readNet(args.net, withInternal=False)
+    n_taz = sum(1 for _ in sumolib.xml.parse(args.taz, "taz"))
     zones, xys, edges = zone_centroids(net, args.taz)
-    print(f"{len(zones)} routable zones, backend={args.backend}")
+    print(f"{len(zones)}/{n_taz} routable zones, backend={args.backend}")
+
+    # A TAZ file built for a different net silently loses zones here -- taz_od.xml
+    # is a prune_tab artifact and drops 6 of its 13 zones on tehran_2026_area.
+    # Losing half the study area must not be a warning you can scroll past.
+    if len(zones) < 0.8 * n_taz and not args.allow_partial:
+        raise SystemExit(
+            f"\n{n_taz - len(zones)} of {n_taz} zones have no routable edge on "
+            f"{os.path.basename(args.net)}.\nThat TAZ file was almost certainly "
+            f"built for a different net -- its edge ids do not match this one.\n"
+            f"Rebuild the TAZ against this net, or pass the net it was built for.\n"
+            f"Pass --allow-partial to proceed anyway (you will model only "
+            f"{len(zones)} zones).")
 
     if args.backend == "sumo":
         m = costs_sumo(net, edges)

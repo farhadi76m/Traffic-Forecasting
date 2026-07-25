@@ -381,7 +381,7 @@ def main():
             # translucent fill so the network stays readable underneath
             for k, ring in enumerate(xy_rings):
                 sh = " ".join("%.2f,%.2f" % p for p in ring + [ring[0]])
-                pid = z["taz_id"] if k == 0 else "%s_%d" % (z["taz_id"], k)
+                pid = z["taz_id"] if k == 0 else "%s.%d" % (z["taz_id"], k)
                 fp.write('    <poly id="%s" type="district" color="%s,70" fill="1" '
                          'layer="-10" lineWidth="4" shape="%s"/>\n' % (pid, col, sh))
         ft.write("</tazs>\n")

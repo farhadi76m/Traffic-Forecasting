@@ -71,21 +71,34 @@ def run(cmd):
 
 
 def observed_index(path, peak):
-    """Mean speed/freeflow over probe edges in peak hours -- the target."""
-    ratios, edges = [], set()
+    """Mean freeflow/actual travel time over probe zone pairs in peak hours.
+
+    Accepts fetch_neshan.py output (zone-pair travel times, works in Iran) or
+    fetch_speeds.py output (segment speeds, TomTom/HERE -- not available in
+    Iran). Both reduce to the same 'fraction of free flow' index.
+    """
+    ratios, pairs = [], set()
     with open(path) as f:
-        for row in csv.DictReader(f):
-            if int(row["hour"]) not in peak:
-                continue
+        rows = list(csv.DictReader(f))
+    if not rows:
+        sys.exit(f"{path} is empty")
+    neshan = "from_zone" in rows[0]
+    for row in rows:
+        if int(row["hour"]) not in peak:
+            continue
+        if neshan:
+            ratios.append(float(row["ratio"]))
+            pairs.add((row["from_zone"], row["to_zone"]))
+        else:
             free = float(row["freeflow_kmh"])
             if free <= 0 or float(row["confidence"]) < 0.5:
                 continue
             ratios.append(float(row["current_kmh"]) / free)
-            edges.add(row["edge_id"])
+            pairs.add(row["edge_id"])
     if not ratios:
         sys.exit(f"{path} has no usable rows for peak hours {sorted(peak)}.\n"
-                 "Did fetch_speeds.py run across those hours?")
-    return float(np.mean(ratios)), edges
+                 "Did the fetcher run across those hours?")
+    return float(np.mean(ratios)), pairs, neshan
 
 
 def simulated_index(args, trips_per_day, probe_edges, peak, tag):
@@ -127,37 +140,85 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag):
          "--begin", str(begin), "--end", str(end), "--mesosim", "--seed", "7",
          "--no-step-log", "--no-warnings", "--ignore-route-errors"])
 
-    net = sumolib.net.readNet(args.net, withInternal=False)
-    ratios = []
+    return score(edgedata, probes, peak, sumolib.net.readNet(args.net,
+                                                             withInternal=False))
+
+
+def score(edgedata, probes, peak, net):
+    """Simulated congestion index, measured the same way as the observed one.
+
+    probes is either {(from,to): (freeflow_s, [edge ids])} for Neshan zone-pair
+    routes -- we sum the simulated travel time along each route and take
+    freeflow/simulated -- or a set of edge ids for the TomTom segment form.
+    """
+    # per hour, per edge: simulated travel time (s) and mean speed (m/s)
+    tt = {}
+    spd = {}
     for iv in ET.parse(edgedata).getroot().iter("interval"):
         hour = int(float(iv.get("begin")) // 3600)
         if hour not in peak:
             continue
         for e in iv.iter("edge"):
-            eid = e.get("id")
-            if eid not in probe_edges or e.get("speed") is None:
-                continue
-            limit = net.getEdge(eid).getSpeed()
-            if limit > 0:
-                ratios.append(min(float(e.get("speed")) / limit, 1.0))
+            if e.get("traveltime") is not None:
+                tt[(hour, e.get("id"))] = float(e.get("traveltime"))
+            if e.get("speed") is not None:
+                spd[(hour, e.get("id"))] = float(e.get("speed"))
+
+    ratios = []
+    if isinstance(probes, dict):  # Neshan: route travel times
+        for (a, b), (freeflow, edges) in probes.items():
+            for hour in peak:
+                # an edge missing from edgedata carried no traffic that hour, so
+                # it ran at free flow: fall back to its free-flow time
+                sim = sum(tt.get((hour, e.getID()), e.getLength() / e.getSpeed())
+                          for e in edges)
+                if sim > 0:
+                    ratios.append(min(freeflow / sim, 1.0))
+    else:                          # TomTom: link speed / speed limit
+        for (hour, eid), s in spd.items():
+            if eid in probes and net.hasEdge(eid):
+                limit = net.getEdge(eid).getSpeed()
+                if limit > 0:
+                    ratios.append(min(s / limit, 1.0))
     if not ratios:
-        raise RuntimeError("no probe edges appeared in the simulation output")
+        raise RuntimeError("no probes appeared in the simulation output")
     return float(np.mean(ratios))
 
 
 def main():
     args = parse_args()
     peak = {int(h) for h in args.peak_hours.split(",")}
-    target, probe_edges = observed_index(args.observed, peak)
-    print(f"observed congestion index: {target:.3f} "
-          f"({len(probe_edges)} probe edges, hours {sorted(peak)})")
+    target, observed_probes, neshan = observed_index(args.observed, peak)
+
+    if neshan:
+        # rebuild the free-flow route for each observed pair, so the simulated
+        # index is measured on exactly the paths Neshan was asked about
+        from fetch_neshan import zone_reps
+        net = sumolib.net.readNet(args.net, withInternal=False)
+        reps = zone_reps(net, args.taz)
+        probes = {}
+        for a, b in observed_probes:
+            if a not in reps or b not in reps:
+                continue
+            route, ff = net.getOptimalPath(reps[a], reps[b], fastest=True,
+                                           vClass="passenger")
+            if route:
+                probes[(a, b)] = (ff, list(route))
+        if not probes:
+            sys.exit("none of the observed zone pairs are routable on this net")
+        what = f"{len(probes)} zone pairs (Neshan, measured)"
+    else:
+        probes = observed_probes
+        what = f"{len(probes)} road segments (TomTom)"
+
+    print(f"observed congestion index: {target:.3f} -- {what}, hours {sorted(peak)}")
     print(f"  -> real traffic moves at {target * 100:.0f}% of free flow in peak\n")
 
     lo, hi = args.lo, args.hi
     best = None
     for i in range(args.iters):
         mid = int(np.sqrt(lo * hi))  # geometric: demand spans orders of magnitude
-        idx = simulated_index(args, mid, probe_edges, peak, f"it{i}")
+        idx = simulated_index(args, mid, probes, peak, f"it{i}")
         err = idx - target
         print(f"  iter {i}: {mid:>8,} trips/day -> index {idx:.3f} "
               f"({'too free' if err > 0 else 'too jammed'}, err {err:+.3f})")
