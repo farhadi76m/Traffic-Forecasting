@@ -1,0 +1,79 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<data>
+  <interval id="h7" begin="25200" end="28800">
+    <tazRelation from="0_1" to="0_1" count="628" />
+    <tazRelation from="0_1" to="0_2" count="170" />
+    <tazRelation from="0_1" to="1_1" count="514" />
+    <tazRelation from="0_1" to="1_2" count="396" />
+    <tazRelation from="0_1" to="2_1" count="24" />
+    <tazRelation from="0_1" to="2_2" count="40" />
+    <tazRelation from="0_2" to="0_1" count="63" />
+    <tazRelation from="0_2" to="0_2" count="92" />
+    <tazRelation from="0_2" to="1_1" count="92" />
+    <tazRelation from="0_2" to="1_2" count="217" />
+    <tazRelation from="0_2" to="2_1" count="3" />
+    <tazRelation from="0_2" to="2_2" count="8" />
+    <tazRelation from="1_1" to="0_1" count="381" />
+    <tazRelation from="1_1" to="0_2" count="203" />
+    <tazRelation from="1_1" to="1_1" count="1023" />
+    <tazRelation from="1_1" to="1_2" count="654" />
+    <tazRelation from="1_1" to="2_1" count="39" />
+    <tazRelation from="1_1" to="2_2" count="47" />
+    <tazRelation from="1_2" to="0_1" count="1730" />
+    <tazRelation from="1_2" to="0_2" count="1614" />
+    <tazRelation from="1_2" to="1_1" count="3110" />
+    <tazRelation from="1_2" to="1_2" count="3291" />
+    <tazRelation from="1_2" to="2_1" count="213" />
+    <tazRelation from="1_2" to="2_2" count="342" />
+    <tazRelation from="2_1" to="0_1" count="13" />
+    <tazRelation from="2_1" to="0_2" count="7" />
+    <tazRelation from="2_1" to="1_1" count="25" />
+    <tazRelation from="2_1" to="1_2" count="41" />
+    <tazRelation from="2_1" to="2_1" count="5" />
+    <tazRelation from="2_1" to="2_2" count="2" />
+    <tazRelation from="2_2" to="0_1" count="24" />
+    <tazRelation from="2_2" to="0_2" count="20" />
+    <tazRelation from="2_2" to="1_1" count="41" />
+    <tazRelation from="2_2" to="1_2" count="80" />
+    <tazRelation from="2_2" to="2_1" count="7" />
+    <tazRelation from="2_2" to="2_2" count="11" />
+  </interval>
+  <interval id="h8" begin="28800" end="32400">
+    <tazRelation from="0_1" to="0_1" count="616" />
+    <tazRelation from="0_1" to="0_2" count="168" />
+    <tazRelation from="0_1" to="1_1" count="490" />
+    <tazRelation from="0_1" to="1_2" count="388" />
+    <tazRelation from="0_1" to="2_1" count="23" />
+    <tazRelation from="0_1" to="2_2" count="31" />
+    <tazRelation from="0_2" to="0_1" count="69" />
+    <tazRelation from="0_2" to="0_2" count="85" />
+    <tazRelation from="0_2" to="1_1" count="89" />
+    <tazRelation from="0_2" to="1_2" count="263" />
+    <tazRelation from="0_2" to="2_1" count="8" />
+    <tazRelation from="0_2" to="2_2" count="8" />
+    <tazRelation from="1_1" to="0_1" count="403" />
+    <tazRelation from="1_1" to="0_2" count="204" />
+    <tazRelation from="1_1" to="1_1" count="960" />
+    <tazRelation from="1_1" to="1_2" count="646" />
+    <tazRelation from="1_1" to="2_1" count="39" />
+    <tazRelation from="1_1" to="2_2" count="44" />
+    <tazRelation from="1_2" to="0_1" count="1567" />
+    <tazRelation from="1_2" to="0_2" count="1501" />
+    <tazRelation from="1_2" to="1_1" count="2906" />
+    <tazRelation from="1_2" to="1_2" count="3074" />
+    <tazRelation from="1_2" to="2_1" count="197" />
+    <tazRelation from="1_2" to="2_2" count="311" />
+    <tazRelation from="2_1" to="0_1" count="20" />
+    <tazRelation from="2_1" to="0_2" count="9" />
+    <tazRelation from="2_1" to="1_1" count="23" />
+    <tazRelation from="2_1" to="1_2" count="53" />
+    <tazRelation from="2_1" to="2_1" count="10" />
+    <tazRelation from="2_1" to="2_2" count="5" />
+    <tazRelation from="2_2" to="0_1" count="21" />
+    <tazRelation from="2_2" to="0_2" count="15" />
+    <tazRelation from="2_2" to="1_1" count="32" />
+    <tazRelation from="2_2" to="1_2" count="81" />
+    <tazRelation from="2_2" to="2_1" count="3" />
+    <tazRelation from="2_2" to="2_2" count="14" />
+  </interval>
+</data>

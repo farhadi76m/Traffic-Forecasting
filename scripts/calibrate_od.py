@@ -60,7 +60,28 @@ def parse_args():
     p.add_argument("--beta", type=float, default=0.12)
     p.add_argument("--num", type=int, default=20,
                    help="scenario days to emit once calibrated")
+    p.add_argument("--hours", default=None,
+                   help="restrict the emitted OD to these hours, e.g. '7,8'. "
+                        "Calibration always simulates its own peak window; "
+                        "this only trims the final output")
+    # these must reach gravity_od.py: its defaults point at the original map,
+    # and land use read from the wrong extract silently floors every zone to 1
+    p.add_argument("--osm", default=None,
+                   help="local .osm extract for the land-use weights; must be "
+                        "the extract this --net was built from")
+    p.add_argument("--cache", default=None,
+                   help="land-use weight cache (keep one per map)")
     return p.parse_args()
+
+
+def od_source_args(args):
+    """The land-use options every inner gravity_od.py call must inherit."""
+    extra = []
+    if args.osm is not None:
+        extra += ["--osm", args.osm]
+    if args.cache:
+        extra += ["--cache", args.cache]
+    return extra
 
 
 def run(cmd):
@@ -117,7 +138,8 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag):
     run([sys.executable, os.path.join(HERE, "gravity_od.py"),
          "--net", args.net, "--taz", args.taz, "--cost", args.cost,
          "--out-dir", od_dir, "--num", "1", "--beta", str(args.beta),
-         "--daily-trips", str(int(trips_per_day)), "--noise", "0"])
+         "--daily-trips", str(int(trips_per_day)), "--noise", "0"]
+        + od_source_args(args))
 
     od = os.path.join(od_dir, "od_00.xml")
     trips = os.path.join(wdir, "trips.xml")
@@ -140,8 +162,8 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag):
          "--begin", str(begin), "--end", str(end), "--mesosim", "--seed", "7",
          "--no-step-log", "--no-warnings", "--ignore-route-errors"])
 
-    return score(edgedata, probes, peak, sumolib.net.readNet(args.net,
-                                                             withInternal=False))
+    return score(edgedata, probe_edges, peak,
+                 sumolib.net.readNet(args.net, withInternal=False))
 
 
 def score(edgedata, probes, peak, net):
@@ -235,10 +257,14 @@ def main():
     print(f"\ncalibrated: {trips:,} trips/day (sim index {idx:.3f} vs "
           f"observed {target:.3f})")
 
-    run([sys.executable, os.path.join(HERE, "gravity_od.py"),
-         "--net", args.net, "--taz", args.taz, "--cost", args.cost,
-         "--out-dir", args.out_dir, "--num", str(args.num),
-         "--beta", str(args.beta), "--daily-trips", str(trips)])
+    cmd = [sys.executable, os.path.join(HERE, "gravity_od.py"),
+           "--net", args.net, "--taz", args.taz, "--cost", args.cost,
+           "--out-dir", args.out_dir, "--num", str(args.num),
+           "--beta", str(args.beta), "--daily-trips", str(trips)]
+    if args.hours:
+        cmd += ["--hours", args.hours]
+    cmd += od_source_args(args)
+    run(cmd)
     print(f"{args.num} calibrated scenarios -> {args.out_dir}")
 
 

@@ -44,6 +44,11 @@ def parse_args():
                         "NOT hardcode zone ids, they differ per TAZ file")
     p.add_argument("--hour", type=int, default=7, help="peak hour to draw")
     p.add_argument("--out", default="output/figures/od_map.png")
+    p.add_argument("--title",
+                   default="Tehran District 5 — traffic analysis zones and OD demand")
+    p.add_argument("--subtitle",
+                   default="Zone shapes and land use are real. Trip COUNTS are "
+                           "modelled, not measured — see the reliability note.")
     p.add_argument("--provenance", default="SYNTHETIC demand - not measured",
                    help="banner text; say plainly where the numbers came from")
     return p.parse_args()
@@ -61,10 +66,13 @@ def find_islands(cost_csv):
     zones = rows[0][1:]
     m = np.array([[float(v) for v in r[1:]] for r in rows[1:]])
     off = m[~np.eye(len(zones), dtype=bool)]
-    fill = off.max()
-    if fill <= np.median(off) * 1.5:      # no sentinel -> fully connected net
-        return set()
-    bad = (m >= fill - 1e-6).sum(axis=1)
+    # The sentinel is exactly 3x the largest REAL cost, so it sits a factor of
+    # three above the next distinct value. Comparing against the median instead
+    # flags the slowest genuine pair on any net with a wide cost spread.
+    distinct = np.unique(off)
+    if len(distinct) < 2 or distinct[-1] < 2.5 * distinct[-2]:
+        return set()                      # no sentinel -> fully connected net
+    bad = (m >= distinct[-1] - 1e-6).sum(axis=1)
     return {z for z, n in zip(zones, bad) if n > 0}
 
 
@@ -197,13 +205,9 @@ def main():
         ax.set_xlabel("km east of net origin", fontsize=9, color=MUTED)
     ax1.set_ylabel("km north", fontsize=9, color=MUTED)
 
-    fig.suptitle("Tehran District 5 — traffic analysis zones and OD demand",
-                 x=0.045, y=0.955, ha="left", fontsize=16, color=INK,
-                 fontweight="bold")
-    fig.text(0.045, 0.885,
-             "Zone shapes and land use are real. Trip COUNTS are modelled, not "
-             "measured — see the reliability note.",
-             ha="left", fontsize=10.5, color=INK2)
+    fig.suptitle(args.title, x=0.045, y=0.955, ha="left", fontsize=16,
+                 color=INK, fontweight="bold")
+    fig.text(0.045, 0.885, args.subtitle, ha="left", fontsize=10.5, color=INK2)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     fig.savefig(args.out, dpi=150, facecolor=SURFACE, bbox_inches="tight")

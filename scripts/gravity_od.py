@@ -76,6 +76,12 @@ def parse_args():
                    help="deterrence per minute; higher = more local trips "
                         "(0.08-0.15 is typical for urban car travel)")
     p.add_argument("--noise", type=float, default=0.08)
+    p.add_argument("--hours", default=None,
+                   help="only emit these hours, e.g. '7,8' for an AM-peak "
+                        "2-hour OD. Counts still come from the same daily "
+                        "total and hourly profile, so the window is a slice "
+                        "of a calibrated day, not a rescaled one. "
+                        "Default: all 24 hours")
     p.add_argument("--cache", default="output/osm_weights.npz")
     p.add_argument("--osm", default="sumo/tehran_2026_area.osm",
                    help="local OSM extract; used instead of Overpass when present. "
@@ -277,14 +283,18 @@ def main():
     deterrence = np.exp(-args.beta * cost)
     base = furness(prod, attr, deterrence)          # home -> work shape
     hour_frac = HOUR_PROFILE / HOUR_PROFILE.sum()
+    hours = ([int(h) for h in args.hours.split(",")] if args.hours
+             else list(range(24)))
     print(f"{n} zones | mean trip cost "
-          f"{(base * cost).sum():.1f} min | beta={args.beta}")
+          f"{(base * cost).sum():.1f} min | beta={args.beta} | "
+          f"hours {hours[0]}-{hours[-1]} "
+          f"({hour_frac[hours].sum() * 100:.0f}% of the daily total)")
 
     for s in range(args.num):
         day = float(np.clip(rng.normal(1.0, args.noise), 0.75, 1.25))
         root = ET.Element("data")
         total = 0
-        for h in range(24):
+        for h in hours:
             # evening reverses the commute: transpose the same gravity shape
             w = OUTBOUND[h] * base + (1 - OUTBOUND[h]) * base.T
             counts = rng.poisson(w * args.daily_trips * hour_frac[h] * day)
