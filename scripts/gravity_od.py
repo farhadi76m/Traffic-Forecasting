@@ -197,13 +197,17 @@ def overpass_points(query, bbox):
                      "extract.")
 
 
-def osm_weights(net, zones, polys, cache, osm_file=None):
+def osm_weights(get_net, zones, polys, cache, osm_file=None):
+    """get_net is a callable: the net is only parsed when the cache misses,
+    which matters when this runs once per calibration iteration on a net that
+    costs minutes to read."""
     if os.path.exists(cache):
         z = np.load(cache, allow_pickle=True)
         if list(z["zones"]) == zones:
             print(f"weights from cache {cache}")
             return z["prod"], z["attr"]
 
+    net = get_net()
     if osm_file and os.path.exists(osm_file):
         print(f"reading land use from {osm_file} (no Overpass needed)")
         prod_xy, attr_xy = osm_local_points(osm_file, net)
@@ -264,7 +268,14 @@ def main():
     rng = np.random.default_rng(args.seed)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    net = sumolib.net.readNet(args.net, withInternal=False)
+    cached_net = []
+
+    def get_net():
+        if not cached_net:
+            print(f"loading {os.path.basename(args.net)} ...", flush=True)
+            cached_net.append(sumolib.net.readNet(args.net, withInternal=False))
+        return cached_net[0]
+
     zones, polys = taz_polygons(args.taz)
 
     rows = [l.strip().split(",") for l in open(args.cost) if l.strip()]
@@ -277,7 +288,7 @@ def main():
     cost = cost[np.ix_(order, order)]
     n = len(zones)
 
-    prod, attr = osm_weights(net, zones, polys, args.cache, args.osm)
+    prod, attr = osm_weights(get_net, zones, polys, args.cache, args.osm)
     prod, attr = prod[keep] if len(prod) != n else prod, attr[keep] if len(attr) != n else attr
 
     deterrence = np.exp(-args.beta * cost)

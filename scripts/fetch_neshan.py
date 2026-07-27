@@ -72,17 +72,19 @@ def probe_pairs(net, reps, n):
     Short hops barely move the congestion ratio -- a 2-minute trip is 2 minutes
     in free flow and 3 in a jam. Long crosstown trips are where congestion shows
     up, so they carry the calibration signal.
+
+    Free-flow times come from one Dijkstra per origin rather than one per pair:
+    at 343 zones the pairwise form is 117k full searches over a city net, which
+    does not finish. The chosen route itself is never needed here -- calibrate_od
+    rebuilds it for the handful of pairs actually probed.
     """
+    from cost_matrix import costs_sumo
+
     zones = sorted(reps)
-    cand = []
-    for i, a in enumerate(zones):
-        for b in zones:
-            if a == b:
-                continue
-            route, ff = net.getOptimalPath(reps[a], reps[b], fastest=True,
-                                           vClass="passenger")
-            if route and ff > 120:  # skip trivially short pairs
-                cand.append((a, b, ff, route))
+    m = costs_sumo(net, [reps[z] for z in zones])
+    cand = [(a, b, float(m[i, j]), None)
+            for i, a in enumerate(zones) for j, b in enumerate(zones)
+            if i != j and np.isfinite(m[i, j]) and m[i, j] > 120]
     if not cand:
         raise SystemExit("no routable zone pairs -- is the net one connected component?")
     cand.sort(key=lambda c: -c[2])

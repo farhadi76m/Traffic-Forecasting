@@ -17,6 +17,7 @@ Example:
         --taz sumo/taz_od.xml --backend sumo --out output/cost_matrix.csv
 """
 import argparse
+import heapq
 import os
 import time
 
@@ -71,18 +72,46 @@ def zone_centroids(net, taz_file):
     return zones, np.array(xys), edges
 
 
-def costs_sumo(net, edges):
-    """Dijkstra over our own net. Diagonal = half the mean intra-zone edge time."""
+def costs_sumo(net, edges, vclass="passenger"):
+    """Travel-time matrix by one Dijkstra per ORIGIN, not one per pair.
+
+    net.getOptimalPath is a single-pair search, so filling an n x n matrix with
+    it costs n^2 full searches -- fine for 6 zones, hopeless for a city (300
+    zones over 218k edges is ~90,000 of them). One relaxation per origin sweeps
+    the whole graph and reads off every destination on the way, which is the
+    same answer in n searches instead of n^2.
+
+    Cost is seconds and includes both the origin and destination edge, so the
+    diagonal stays the single-edge time the pairwise version used.
+    """
     n = len(edges)
     m = np.full((n, n), np.nan)
+    index = {e.getID(): j for j, e in enumerate(edges)}
+
+    def tt(e):
+        return e.getLength() / max(e.getSpeed(), 1.0)
+
     for i, src in enumerate(edges):
-        for j, dst in enumerate(edges):
-            if i == j:
-                m[i, j] = src.getLength() / max(src.getSpeed(), 1.0)
+        # (cost, edge id) only -- Edge objects are not orderable, so they must
+        # never end up as a heap tie-breaker
+        pq = [(tt(src), src.getID())]
+        settled = {}
+        remaining = n
+        while pq and remaining:
+            d, eid = heapq.heappop(pq)
+            if eid in settled:
                 continue
-            # fastest=True makes the cost seconds; the default is metres
-            route, cost = net.getOptimalPath(src, dst, fastest=True, vClass="passenger")
-            m[i, j] = cost if route else np.nan
+            settled[eid] = d
+            j = index.get(eid)
+            if j is not None:
+                m[i, j] = d
+                remaining -= 1
+            for nxt in net.getEdge(eid).getOutgoing():
+                if nxt.getID() not in settled and nxt.allows(vclass):
+                    heapq.heappush(pq, (d + tt(nxt), nxt.getID()))
+        m[i, i] = tt(src)
+        if (i + 1) % 25 == 0 or i + 1 == n:
+            print(f"  {i + 1}/{n} origins", flush=True)
     return m
 
 

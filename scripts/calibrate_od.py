@@ -26,7 +26,9 @@ This gets the order of magnitude right. It is not the same as counting cars.
 """
 import argparse
 import csv
+import gzip
 import os
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -71,7 +73,19 @@ def parse_args():
                         "the extract this --net was built from")
     p.add_argument("--cache", default=None,
                    help="land-use weight cache (keep one per map)")
+    p.add_argument("--keep-work", action="store_true",
+                   help="keep each iteration's trips/routes for debugging. "
+                        "Off by default: on a city net they are GBs per "
+                        "iteration and only the congestion index is used")
     return p.parse_args()
+
+
+def xml_root(path):
+    """Parse an XML file that may be gzipped (SUMO writes .gz transparently)."""
+    if path.endswith(".gz"):
+        with gzip.open(path, "rb") as f:
+            return ET.parse(f).getroot()
+    return ET.parse(path).getroot()
 
 
 def od_source_args(args):
@@ -122,7 +136,7 @@ def observed_index(path, peak):
     return float(np.mean(ratios)), pairs, neshan
 
 
-def simulated_index(args, trips_per_day, probe_edges, peak, tag):
+def simulated_index(args, trips_per_day, probe_edges, peak, tag, net):
     """Build OD at this magnitude, simulate, return the same congestion index.
 
     Only the peak window is simulated -- that is the only part we measure, and
@@ -135,16 +149,23 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag):
     begin = (min(peak) - 1) * 3600          # warm-up hour
     end = (max(peak) + 1) * 3600
 
+    # generate only the hours this run actually simulates: a full 24h matrix at
+    # 343 zones is ~2.8M rows that od2trips would immediately discard
+    sim_hours = ",".join(str(h) for h in range(max(min(peak) - 1, 0), max(peak) + 1))
     run([sys.executable, os.path.join(HERE, "gravity_od.py"),
          "--net", args.net, "--taz", args.taz, "--cost", args.cost,
          "--out-dir", od_dir, "--num", "1", "--beta", str(args.beta),
-         "--daily-trips", str(int(trips_per_day)), "--noise", "0"]
+         "--daily-trips", str(int(trips_per_day)), "--noise", "0",
+         "--hours", sim_hours]
         + od_source_args(args))
 
     od = os.path.join(od_dir, "od_00.xml")
-    trips = os.path.join(wdir, "trips.xml")
-    routes = os.path.join(wdir, "routes.xml")
-    edgedata = os.path.join(wdir, "edgedata.xml")
+    # SUMO reads and writes .gz transparently. On a city-sized net one
+    # iteration is several GB of trips/routes uncompressed, and only the
+    # congestion index survives it, so never materialise that on disk.
+    trips = os.path.join(wdir, "trips.xml.gz")
+    routes = os.path.join(wdir, "routes.xml.gz")
+    edgedata = os.path.join(wdir, "edgedata.xml.gz")
 
     run(["od2trips", "--taz-files", args.taz, "--tazrelation-files", od,
          "-o", trips, "--ignore-vehicle-type", "--seed", "7",
@@ -152,6 +173,9 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag):
          "--departpos", "random", "--arrivalpos", "random"])
     run(["duarouter", "-n", args.net, "--route-files", trips, "-o", routes,
          "--begin", str(begin), "--end", str(end),
+         # the route-alternatives file is as large as the routes and nothing
+         # downstream reads it
+         "--alternatives-output", os.devnull,
          "--ignore-errors", "--no-warnings", "--repair", "--seed", "7"])
 
     add = os.path.join(wdir, "ed.add.xml")
@@ -162,8 +186,12 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag):
          "--begin", str(begin), "--end", str(end), "--mesosim", "--seed", "7",
          "--no-step-log", "--no-warnings", "--ignore-route-errors"])
 
-    return score(edgedata, probe_edges, peak,
-                 sumolib.net.readNet(args.net, withInternal=False))
+    try:
+        return score(edgedata, probe_edges, peak, net)
+    finally:
+        # the index is all we keep; the routes behind it are worth GBs
+        if not args.keep_work:
+            shutil.rmtree(wdir, ignore_errors=True)
 
 
 def score(edgedata, probes, peak, net):
@@ -176,7 +204,7 @@ def score(edgedata, probes, peak, net):
     # per hour, per edge: simulated travel time (s) and mean speed (m/s)
     tt = {}
     spd = {}
-    for iv in ET.parse(edgedata).getroot().iter("interval"):
+    for iv in xml_root(edgedata).iter("interval"):
         hour = int(float(iv.get("begin")) // 3600)
         if hour not in peak:
             continue
@@ -212,11 +240,15 @@ def main():
     peak = {int(h) for h in args.peak_hours.split(",")}
     target, observed_probes, neshan = observed_index(args.observed, peak)
 
+    # read once and reuse: a city-sized net costs minutes and GBs to parse, and
+    # every bisection iteration needs it to score the probes
+    print(f"loading {os.path.basename(args.net)} ...", flush=True)
+    net = sumolib.net.readNet(args.net, withInternal=False)
+
     if neshan:
         # rebuild the free-flow route for each observed pair, so the simulated
         # index is measured on exactly the paths Neshan was asked about
         from fetch_neshan import zone_reps
-        net = sumolib.net.readNet(args.net, withInternal=False)
         reps = zone_reps(net, args.taz)
         probes = {}
         for a, b in observed_probes:
@@ -240,7 +272,7 @@ def main():
     best = None
     for i in range(args.iters):
         mid = int(np.sqrt(lo * hi))  # geometric: demand spans orders of magnitude
-        idx = simulated_index(args, mid, probes, peak, f"it{i}")
+        idx = simulated_index(args, mid, probes, peak, f"it{i}", net)
         err = idx - target
         print(f"  iter {i}: {mid:>8,} trips/day -> index {idx:.3f} "
               f"({'too free' if err > 0 else 'too jammed'}, err {err:+.3f})")
