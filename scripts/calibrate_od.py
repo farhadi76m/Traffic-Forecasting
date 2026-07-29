@@ -73,6 +73,8 @@ def parse_args():
                         "the extract this --net was built from")
     p.add_argument("--cache", default=None,
                    help="land-use weight cache (keep one per map)")
+    p.add_argument("--threads", type=int, default=max(1, (os.cpu_count() or 2) - 2),
+                   help="duarouter routing threads (default: cores - 2)")
     p.add_argument("--keep-work", action="store_true",
                    help="keep each iteration's trips/routes for debugging. "
                         "Off by default: on a city net they are GBs per "
@@ -173,6 +175,9 @@ def simulated_index(args, trips_per_day, probe_edges, peak, tag, net):
          "--departpos", "random", "--arrivalpos", "random"])
     run(["duarouter", "-n", args.net, "--route-files", trips, "-o", routes,
          "--begin", str(begin), "--end", str(end),
+         # routing dominates a city-scale iteration and is embarrassingly
+         # parallel; the routes themselves are unchanged by the thread count
+         "--routing-threads", str(args.threads),
          # the route-alternatives file is as large as the routes and nothing
          # downstream reads it
          "--alternatives-output", os.devnull,

@@ -43,6 +43,12 @@ def parse_args():
                         "flagged as islands. Without it nothing is flagged -- do "
                         "NOT hardcode zone ids, they differ per TAZ file")
     p.add_argument("--hour", type=int, default=7, help="peak hour to draw")
+    p.add_argument("--label-zones", type=int, default=15,
+                   help="name only the N biggest zones (0 = all). Every zone "
+                        "labelled is unreadable much past 40")
+    p.add_argument("--top-flows", type=int, default=150,
+                   help="draw only the N heaviest zone-pair flows (0 = all). "
+                        "Above ~200 the arrows stop being readable")
     p.add_argument("--out", default="output/figures/od_map.png")
     p.add_argument("--title",
                    default="Tehran District 5 — traffic analysis zones and OD demand")
@@ -116,6 +122,13 @@ def main():
             if a != b:
                 flows[(a, b)] = flows.get((a, b), 0) + int(rel.get("count"))
 
+    # 343 zones means ~117k arrows: an unreadable hairball that also takes
+    # minutes to draw. Keep the heaviest flows, which is what the map is for.
+    shown = len(flows)
+    if args.top_flows and len(flows) > args.top_flows:
+        flows = dict(sorted(flows.items(), key=lambda kv: -kv[1])[:args.top_flows])
+        print(f"drawing the {len(flows)} heaviest of {shown} zone-pair flows")
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7.2), facecolor=SURFACE)
     fig.subplots_adjust(top=0.80, bottom=0.10, wspace=0.12)
 
@@ -136,16 +149,26 @@ def main():
     ratios = {k: np.log2(attr[k] / prod[k]) for k in zones}
     lim = max(abs(v) for v in ratios.values())
     norm = TwoSlopeNorm(vmin=-lim, vcenter=0, vmax=lim)
+    # With a few zones every one can carry a name and its home/job counts. With
+    # 343 they overprint into a black smear, so label only the busiest and let
+    # the choropleth carry the rest.
+    ranked = sorted(ratios, key=lambda z: -(prod[z] + attr[z]))
+    labelled = set(ranked[:args.label_zones]) if args.label_zones else set(ratios)
+    dense = len(ratios) > 40
     for zid, pts in polys.items():
         if zid not in ratios:
             continue
         ax1.add_patch(Polygon(pts, closed=True, facecolor=DIVERGING(norm(ratios[zid])),
-                              edgecolor=SURFACE, linewidth=2))
+                              edgecolor=SURFACE, linewidth=2 if not dense else 0.3))
+        if zid not in labelled:
+            continue
         cx, cy = cents[zid]
-        ax1.text(cx, cy + 0.18, short(zid), ha="center", va="center", fontsize=9,
-                 color=INK, fontweight="bold")
-        ax1.text(cx, cy - 0.24, f"{int(prod[zid])}h / {int(attr[zid])}j",
-                 ha="center", va="center", fontsize=8, color=INK2)
+        ax1.text(cx, cy + 0.18, short(zid), ha="center", va="center",
+                 fontsize=9 if not dense else 7, color=INK, fontweight="bold",
+                 zorder=5)
+        if not dense:
+            ax1.text(cx, cy - 0.24, f"{int(prod[zid])}h / {int(attr[zid])}j",
+                     ha="center", va="center", fontsize=8, color=INK2)
     sm = plt.cm.ScalarMappable(cmap=DIVERGING, norm=norm)
     cb = fig.colorbar(sm, ax=ax1, orientation="horizontal", pad=0.07, shrink=0.75)
     cb.set_label("← more homes      jobs / homes (log₂)      more jobs →",
