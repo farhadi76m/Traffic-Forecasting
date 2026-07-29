@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traffic-estimate"
+version = "2.0.0"
+description = "SUMO-based hourly traffic forecasting and OD estimation"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "networkx",
+    "requests",
+    "tqdm",
+    "torch",
+    "fpdf2",
+    "sumolib",
+]
+
+[project.optional-dependencies]
+notebook = ["torchinfo", "scikit-learn", "jupyter"]
+
+[tool.setuptools.packages.find]
+include = ["traffic_estimate*"]
