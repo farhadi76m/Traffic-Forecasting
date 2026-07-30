@@ -1,9 +1,10 @@
 # Traffic-Estimate
 
 Google-Maps-style hourly traffic forecasting on a SUMO network. The pipeline
-generates synthetic 24-hour OD demand, simulates it with SUMO **meso**, and
-trains a neural network that answers: *given an edge and an hour, how many
-vehicles pass it on a typical day?*
+generates 24-hour OD demand, simulates it with SUMO **meso**, and trains a
+neural network that answers: *given an edge and an hour, how many vehicles pass
+it on a typical day?* A second pipeline replaces SUMO itself with a surrogate
+and runs it backwards, recovering demand from observed traffic.
 
 Current experiment: `sumo/tehran_2026_area.net.xml` (3,229 car edges), but every
 script takes the network as an argument, so any SUMO map works.
@@ -26,23 +27,37 @@ the headline metric.
 
 ![profiles](docs/figures/edge_profiles.png)
 
-## Demo notebook
+## Layout
 
-[`demo.ipynb`](demo.ipynb) is a minimal executed tour: model summary
-(torchinfo), what the embeddings learned, edge+hour inference, and all four
-figures inline. Requires one prior pipeline run (`output/` present).
+All logic lives in the `traffic_estimate` package; `scripts/` are thin CLI
+wrappers over it, so anything the command line does is also callable from Python.
+
+```
+traffic_estimate/
+  network.py taz.py odmatrix.py edgedata.py geo.py osm.py   the SUMO data model
+  demand/       hour profiles, gravity/Furness, OSM land use, OD generators
+  services/     Overpass, travel-time cost matrices, live traffic providers
+  simulation/   the od2trips -> duarouter -> sumo chain, demand calibration
+  ml/           datasets, forecaster, surrogate, inverse problem, prediction
+  viz/          shared theme, figures, maps, PDF reports
+  districts.py  OSM admin boundaries -> TAZ
+```
 
 ## Setup
 
-- SUMO ≥ 1.18 CLI tools (`sumo`, `od2trips`, `duarouter`)
+- SUMO ≥ 1.18 CLI tools (`sumo`, `od2trips`, `duarouter`); the conda env ships
+  1.27, which converts OSM extracts that system 1.18 rejects
 - `conda activate traffic` (python, pytorch, pandas, numpy, matplotlib,
-  networkx, sumolib)
+  networkx, sumolib, requests, tqdm, fpdf2)
+
+No install step: the scripts put the repo root on `sys.path` themselves. To use
+the package from elsewhere, `pip install -e .`.
 
 ## Pipeline
 
 ```bash
-# 1. TAZ zones on the target net (3x3 grid, car edges of the largest
-#    connected component only). Alternatively remap an existing TAZ file:
+# 1. TAZ zones on the target net (3x3 grid over the car edges of the largest
+#    connected component). Alternatively remap an existing TAZ file:
 #    --taz sumo/taz_9.xml --taz-net sumo/prune_tab.net.xml
 python scripts/build_taz.py --net sumo/tehran_2026_area.net.xml \
     --grid 3 --out output/taz/taz_grid9.xml
@@ -65,13 +80,32 @@ python scripts/train.py --data-dir output/dataset --out-dir output/model \
     --model mlp --test-scenarios 8 --val-scenarios 3 --hidden 256 --emb-dim 64
 
 # 6. inference: edge + time -> traffic
-python scripts/predict.py --model-dir output/model --edge "330920957#0" --time 7
+python scripts/predict.py --model-dir output/model --edge="330920957#0" --time 7
 # edge 330920957#0 at 07:00 -> 85.8 vehicles/hour
-python scripts/predict.py --model-dir output/model --edge "330920957#0" --profile
+python scripts/predict.py --model-dir output/model --edge="330920957#0" --profile
 
 # 7. figures (network heatmap, profiles, accuracy scatter, daily curve)
 python scripts/visualize.py --net sumo/tehran_2026_area.net.xml \
     --data-dir output/dataset --model-dir output/model --out-dir output/figures
+```
+
+Pass `--edge=<id>` rather than `--edge <id>`: many SUMO edge ids start with `-`,
+which argparse would otherwise read as a flag.
+
+## Python API
+
+```python
+from traffic_estimate import RoadNetwork, TazSet
+from traffic_estimate.demand import TypicalDayGenerator
+from traffic_estimate.ml import Predictor
+
+net = RoadNetwork("sumo/tehran_2026_area.net.xml")
+taz = TazSet.grid(net, 3)                       # or TazSet.from_file(...)
+TypicalDayGenerator(taz, daily_trips=6000).write_scenarios("output/od", 60)
+
+predictor = Predictor.load("output/model")
+predictor.at("330920957#0", 7)                  # -> 85.8 vehicles/hour
+predictor.profile("330920957#0")                # -> 24 hourly rates
 ```
 
 ## Model
@@ -98,6 +132,39 @@ references for the *history-window* variant of this problem (predicting the
 next hour from the last hour of sensor readings) and would be the next step if
 live measurements become available.
 
+## Real demand: land use, cost, calibration
+
+`generate_od.py` invents demand. To ground it in something measured:
+
+```bash
+# zone-to-zone travel times (backends: sumo | osrm | arcgis)
+python scripts/cost_matrix.py --net NET --taz TAZ --backend sumo \
+    --out output/cost_matrix.csv
+
+# OSM land use -> doubly-constrained gravity OD
+python scripts/gravity_od.py --net NET --taz TAZ --cost output/cost_matrix.csv \
+    --out-dir output/od_gravity --osm map.osm
+
+# observe REAL travel times (Neshan works in Iran; TomTom/HERE do not)
+python scripts/fetch_neshan.py --net NET --taz TAZ --poll 3600 --hours 24
+
+# bisect daily trips until SUMO reproduces the measured congestion index
+python scripts/calibrate_od.py --net NET --taz TAZ --cost output/cost_matrix.csv \
+    --observed output/observed_neshan.csv --out-dir output/od_calibrated
+```
+
+The congestion index is `free-flow time / actual time` on the *same* routes, so
+both sides are route travel times on the same network — no unit or baseline
+fudging. Travel time pins volume only loosely; this gets the order of magnitude
+right, it is not the same as counting cars.
+
+Administrative zones instead of a grid:
+
+```bash
+python scripts/build_taz_districts.py NET --list-levels   # what OSM offers here
+python scripts/build_taz_districts.py NET --level 9 --min-edges 100 --gui
+```
+
 ## Surrogate model: OD -> traffic, and back again
 
 A second, separate pipeline replaces SUMO itself with a network:
@@ -108,19 +175,24 @@ OD matrix  ->  [surrogate]  ->  per-edge, per-hour counts + travel times
 
 and then runs it backwards — observed travel times to a *posterior* over the OD
 matrix, which is the deployment question (you have travel times, you want
-demand). The forward surrogate reuses the GRU, now driven by the OD; the inverse
-is `bayesian scenario.py` with the BPR link-cost function swapped for the
-surrogate.
+demand). The forward surrogate is a GRU over the day driven by the OD; the
+inverse is MAP + Laplace, whose Jacobian is the classical assignment matrix.
 
 The headline finding is a regime condition: **travel time only identifies the OD
 in a congested network.** At this map's default demand the network runs at 99% of
 free-flow speed, and knowing the OD improves travel-time prediction by exactly
-0.0000 R2 over a baseline that ignores the OD. Vehicle counts, on the same data,
+0.0000 R² over a baseline that ignores the OD. Vehicle counts, on the same data,
 are highly informative.
 
 Full write-up, numbers and caveats: [`docs/SURROGATE.md`](docs/SURROGATE.md).
 Scripts: `sample_od.py`, `build_surrogate_dataset.py`, `train_surrogate.py`,
 `invert_od.py`, `visualize_surrogate.py`.
+
+## Demo notebook
+
+[`demo.ipynb`](demo.ipynb) is a minimal executed tour: model summary
+(torchinfo), what the embeddings learned, edge+hour inference, and all four
+figures inline. Requires one prior pipeline run (`output/` present).
 
 ## Using another map
 
